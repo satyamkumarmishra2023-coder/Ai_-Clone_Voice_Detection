@@ -1,83 +1,170 @@
-AI Voice Clone Detection System
+# AI Voice Clone Detection API
 
-A Python pipeline that tells real human voices apart from AI-generated (cloned) voices. It takes a raw audio file, extracts sound features, and passes them to a classifier that predicts whether the voice is real or fake.
+A **FastAPI** service that checks whether a voice recording is a **real human voice** or **AI-generated**. You send an audio file as Base64 in a JSON request, and the API returns a label, a confidence score, an explanation, and some forensic details.
 
-Recognition: Finalist, India AI Impact Summit 2026 (HCL GUVI Buildathon) – top ~2% of 40,000+ teams.
+**Recognition:** Finalist, India AI Impact Summit 2026 (HCL GUVI Buildathon) – top ~2% of 40,000+ teams.
 
-Table of Contents
-Features
-Tech Stack
-How It Works
-Project Structure
-Installation
-Usage
-Results
-Limitations and Future Work
-Author
-Features
-Reads audio files and converts them into numerical features
-Extracts MFCCs, chroma features and zero-crossing rate with Librosa
-Handles audio clips of different lengths by turning them into fixed-size inputs
-Uses vectorised NumPy operations instead of Python loops for faster feature extraction
-Classifies each voice as real or AI-generated with a scikit-learn model
-Tech Stack
-Area	Tools
-Language	Python 3
-Audio features	Librosa
-Numerical work	NumPy
-Machine learning	scikit-learn
-How It Works
-Raw audio  →  Preprocessing  →  Feature extraction  →  Classifier  →  Real / AI-generated
-Preprocessing: Load the audio and convert clips of different lengths into a fixed-size input.
-Feature extraction: Compute MFCCs, chroma features and zero-crossing rate, and store them as NumPy arrays.
-Classification: The scikit-learn model reads the feature vector and predicts the label.
-Project Structure
+---
 
-Replace this with your real folder layout.
+## Table of Contents
 
+1. [Features](#features)
+2. [Tech Stack](#tech-stack)
+3. [How It Works](#how-it-works)
+4. [API Reference](#api-reference)
+5. [Project Structure](#project-structure)
+6. [Installation](#installation)
+7. [Run the Server](#run-the-server)
+8. [Notes and Limitations](#notes-and-limitations)
+9. [Author](#author)
+
+---
+
+## Features
+
+- Accepts audio as **Base64 in a JSON request** (for example MP3 or WAV)
+- Converts any input to **16 kHz mono WAV** using FFmpeg
+- **Two-stage detection:**
+  - Stage 1: a fast signal-processing check using **spectral flatness**
+  - Stage 2: a **wav2vec2 audio classifier** from Hugging Face
+- Returns the **label, confidence score, explanation and forensic details**
+- Cleans up all temporary files after each request
+- Rejects audio that is too short or corrupted
+
+## Tech Stack
+
+| Area | Tools |
+|---|---|
+| Language | Python 3 |
+| API | FastAPI, Uvicorn |
+| Audio processing | Librosa, SoundFile, NumPy, FFmpeg (via `imageio-ffmpeg`) |
+| Machine learning | PyTorch, Hugging Face Transformers (`ntu-spml/wav2vec2-base-superb-sid`) |
+
+## How It Works
+
+```
+Base64 audio  →  Decode  →  FFmpeg (16 kHz mono WAV)  →  Stage 1: Spectral flatness  →  Stage 2: wav2vec2 classifier  →  Result
+```
+
+1. **Decode and convert:** The Base64 audio is saved to a temporary file and converted to 16 kHz mono WAV with FFmpeg.
+2. **Length check:** Audio shorter than 0.2 seconds is rejected.
+3. **Stage 1 – DSP check:** The mean spectral flatness of the audio is calculated. If it is above **0.024**, the voice is labelled `AI_GENERATED`, because older text-to-speech voices tend to be very flat. This threshold was chosen by experiment.
+4. **Stage 2 – ML check:** If Stage 1 passes, the audio goes to the wav2vec2 classifier. If its top confidence score is **below 0.75**, the voice is labelled `AI_GENERATED`. Otherwise it is labelled `HUMAN`.
+5. **If the ML model cannot load,** the API falls back to Stage 1 only and returns `HUMAN` with a lower confidence of 0.80.
+
+## API Reference
+
+### `POST /api/voice-detection`
+
+**Request body (JSON)**
+
+```json
+{
+  "language": "Hindi",
+  "audioFormat": "mp3",
+  "audioBase64": ""
+}
+```
+
+| Field | Description |
+|---|---|
+| `language` | Language of the speaker. Accepted in the request but not used by the current code. |
+| `audioFormat` | File type of the audio, for example `mp3` or `wav`. |
+| `audioBase64` | The audio file encoded as Base64. A `data:...;base64,` prefix is allowed. |
+
+**Example request**
+
+```bash
+curl -X POST "http://localhost:8080/api/voice-detection" \
+  -H "Content-Type: application/json" \
+  -d '{"language": "Hindi", "audioFormat": "mp3", "audioBase64": "<your-base64-audio>"}'
+```
+
+**Example response (example values)**
+
+```json
+{
+  "status": "success",
+  "classification": "HUMAN",
+  "confidenceScore": 0.91,
+  "explanation": "Stage 2 (ML) verified authentic human vocal dynamics.",
+  "forensics": {
+    "layer": "ML Stage 2",
+    "confidence": "91.0%",
+    "flatness": 0.0123
+  }
+}
+```
+
+| Response field | Meaning |
+|---|---|
+| `classification` | `AI_GENERATED`, `HUMAN`, or `ERROR` |
+| `confidenceScore` | Score between 0 and 1 |
+| `explanation` | Short reason for the result |
+| `forensics` | Which stage decided, plus spectral flatness (and confidence for Stage 2) |
+
+**Error response** (HTTP 400 when the request body cannot be processed)
+
+```json
+{
+  "status": "error",
+  "message": "<error message>"
+}
+```
+
+## Project Structure
+
+```
 <project-folder>/
-├── <preprocessing file>.py     # loading and fixed-size conversion
-├── <features file>.py          # MFCC, chroma, zero-crossing rate
-├── <training file>.py          # trains the classifier
-├── <predict file>.py           # predicts on a new audio file
+├── main.py              # API, audio conversion and detection logic
 ├── requirements.txt
 └── README.md
-Installation
-bash
+```
+
+## Installation
+
+```bash
 git clone <your-repo-link>
 cd <your-repo-folder>
 python -m venv venv
 source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-Usage
+```
 
-Replace the file names with your real ones.
+Suggested `requirements.txt`:
 
-Train the model:
+```
+fastapi
+uvicorn
+numpy
+librosa
+soundfile
+imageio-ffmpeg
+torch
+transformers
+```
 
-bash
-python <training file>.py
+The first run downloads the Hugging Face model, so an internet connection is needed once.
 
-Check a new audio file:
+## Run the Server
 
-bash
-python <predict file>.py --file path/to/audio.wav
+```bash
+python main.py
+```
 
-Example output:
+The API starts at `http://localhost:8080`. FastAPI's interactive docs are at `http://localhost:8080/docs`.
 
-Prediction: AI-generated   (confidence: <value>)
-Results
+## Notes and Limitations
 
-Add only numbers you really measured.
+- The Stage 1 threshold (0.024) was found by experiment. It is not a general rule and may not work for all audio.
+- Stage 1 returns a fixed confidence of 0.98. This is not a measured probability.
+- The Stage 2 model is a speaker-identification model. The system treats a low confidence score as a sign of AI speech. This is a heuristic and has not been tested at large scale.
+- This is a hackathon project and not a certified forensic tool.
+- Possible improvements: add API-key checks to the endpoint, restrict CORS origins, fix the Base64 padding step, train or test a dedicated deepfake-detection model, and add automated tests with a labelled dataset.
 
-Item	Value
-Dataset used	<name and size>
-Model	<model type>
-Accuracy on test data	<value>
-Feature extraction time per sample	<before> → <after> (after replacing loops with NumPy)
-Limitations and Future Work
-Performance depends on the data the model was trained on, so new kinds of voice-cloning tools may be harder to detect.
-Ideas to improve: more training data, more feature types, and testing on noisy real-world audio.
-Author
+## Author
 
-Satyam Kumar Mishra BCA student, Tecnia Institute of Advanced Studies (GGSIPU), Delhi Email: satyamkumarmishra2023@gmail.com LinkedIn: linkedin.com/in/satyam-kumar-mishra-a28b183a5
+**Satyam Kumar Mishra**
+BCA student, Tecnia Institute of Advanced Studies (GGSIPU), Delhi
+Email: satyamkumarmishra2023@gmail.com
+LinkedIn: linkedin.com/in/satyam-kumar-mishra-a28b183a5
